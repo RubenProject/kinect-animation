@@ -2,6 +2,9 @@ from pykinect2 import PyKinectV2
 from pykinect2.PyKinectV2 import *
 from pykinect2 import PyKinectRuntime
 
+from writer import DataWriter
+from helpers import rotation_matrix, rotate_body, translate_body, get_root_transform
+
 import numpy as np
 from math import cos, sin, atan, atan2, pi
 import ctypes
@@ -9,7 +12,7 @@ import _ctypes
 import pygame
 import pygame.freetype
 import sys
-import copy
+import time
 
 if sys.hexversion >= 0x03000000:
     import _thread as thread
@@ -27,92 +30,7 @@ SKELETON_COLORS = [pygame.color.THECOLORS["red"],
                    pygame.color.THECOLORS["violet"]]
 
 
-class body_writer():
-    def __init__(self):
-        self.save_path = "data/"
-
-    def save(self, body):
-        fp = open(self.save_path + "1.csv", "w")
-        for i in range(len(body)):
-            for j in range(PyKinectV2.JointType_Count):
-                body[i][j].Position.x
-                body[i][j].Position.y
-                body[i][j].Position.z
-
-
-
-
-
-
-def smooth(x, window_len=11, window='hanning'):
-    """smooth the data using a window with requested size.
-
-    This method is based on the convolution of a scaled window with the signal.
-    The signal is prepared by introducing reflected copies of the signal
-    (with the window size) in both ends so that transient parts are minimized
-    in the begining and end part of the output signal.
-
-    input:
-        x: the input signal
-        window_len: the dimension of the smoothing window; should be an odd integer
-        window: the type of window from 'flat', 'hanning', 'hamming', 'bartlett', 'blackman'
-            flat window will produce a moving average smoothing.
-
-    output:
-        the smoothed signal
-
-    example:
-
-    t=linspace(-2,2,0.1)
-    x=sin(t)+randn(len(t))*0.1
-    y=smooth(x)
-
-    see also:
-
-    numpy.hanning, numpy.hamming, numpy.bartlett, numpy.blackman, numpy.convolve
-    scipy.signal.lfilter
-
-    TODO: the window parameter could be the window itself if an array instead of a string
-    NOTE: length(output) != length(input), to correct this: return y[(window_len/2-1):-(window_len/2)] instead of just y.
-    """
-
-    if x.ndim != 1:
-        raise ValueError, "smooth only accepts 1 dimension arrays."
-
-    if x.size < window_len:
-        raise ValueError, "Input vector needs to be bigger than window size."
-
-    if window_len < 3:
-        return x
-
-    if not window in ['flat', 'hanning', 'hamming', 'bartlett', 'blackman']:
-        raise ValueError, "Window is on of 'flat', 'hanning', 'hamming', 'bartlett', 'blackman'"
-
-    s = np.r_[x[window_len - 1:0:-1], x, x[-2:-window_len - 1:-1]]
-    # print(len(s))
-    if window == 'flat':  # moving average
-        w = np.ones(window_len, 'd')
-    else:
-        w = eval('np.' + window + '(window_len)')
-
-    y = np.convolve(w / w.sum(), s, mode='valid')
-    return y[(window_len/2):-(window_len/2)]
-
-
-def rotation_matrix(alpha, beta, gamma):
-    """
-    rotation matrix of alpha, beta, gamma radians around x, y, z axes (respectively)
-    """
-    salpha, calpha = sin(alpha), cos(alpha)
-    sbeta, cbeta = sin(beta), cos(beta)
-    sgamma, cgamma = sin(gamma), cos(gamma)
-    return (
-        (cbeta * cgamma, - cbeta * sgamma, sbeta),
-        (calpha * sgamma + salpha * sbeta * cgamma, calpha * cgamma - sgamma * salpha * sbeta, -cbeta * salpha),
-        (sgamma * salpha - calpha * sbeta * cgamma, calpha * sgamma * sbeta + salpha * cgamma, calpha * cbeta)
-    )
-
-class Record_Studio(object):
+class RecordStudio(object):
     def __init__(self, simple_control):
         pygame.init()
 
@@ -152,10 +70,8 @@ class Record_Studio(object):
         self._Y_BODY_OFFSET = 0.8
 
         # keep history of skeletons
+        self._data_writer = None
         self._record = False
-        self._Bdata = None
-        self._Tdata = None
-        self._Fdata = None
 
 
         #setup keyhandler
@@ -215,7 +131,6 @@ class Record_Studio(object):
                         else:
                             key_actions[event.key]['function']()
 
-
                 elif event.type == pygame.KEYUP:
                     if event.key in key_actions and key_actions[event.key]['state']:
                         if key_actions[event.key]['repeat']:
@@ -231,8 +146,6 @@ class Record_Studio(object):
 
         self._event_handler = event_handler
 
-
-
     def start_recording(self):
         if self._record:
             return
@@ -240,12 +153,14 @@ class Record_Studio(object):
             print "no gait selected"
             return
         print "start of recording"
+        self._data_writer = DataWriter(self.gait_index)
         self._record = True
 
     def stop_recording(self):
         if not self._record:
             return
         print "end of recording"
+        self._data_writer.finalize_recording()
         print "save recording?"
         pygame.event.clear(pygame.KEYDOWN)
         done = False
@@ -255,20 +170,22 @@ class Record_Studio(object):
             for event in events:
                 if event.key == pygame.K_PAGEDOWN:
                     print "saving recording..."
-                    self.save_data()
+                    self._data_writer.write_raw_data("testdata")
+                    #self._data_writer.process_data()
+                    #self._data_writer.save()
                     done = True
                 elif event.key == pygame.K_PAGEUP:
                     print "discarded recording"
                     done = True
-        self._Bdata = None
-        self._Fdata = None
+        del self._data_writer
         self._record = False
 
     def play_recording(self):
-        for i in range(len(self._Bdata)):
+        Bdata = self._data_writer.get_Bdata()
+        for i in range(len(Bdata)):
             self._frame_surface.fill((0, 0, 0))
             self.draw_gait()
-            self.draw_body(self._Bdata[i], (255, 255, 255))
+            self.draw_body(Bdata[i], (255, 255, 255))
             self.draw()
 
     def draw(self):
@@ -285,69 +202,11 @@ class Record_Studio(object):
         # --- Limit to 60 frames per second
         self._clock.tick(60)
 
-    def save_data(self):
-        #smooth floor data
-        Fdata_t = np.transpose(self._Fdata)
-        for i in range(4):
-            Fdata_t[i] = smooth(Fdata_t[i], 13, 'hanning')
-        self._Fdata = np.transpose(Fdata_t)
-        if not len(self._Bdata) == len(self._Fdata):
-            print("recording corrupt!")
-            exit(0x0)
-        #apply floor transform
-        for i in range(len(self._Bdata)):
-            xrot = atan(self._Fdata[i][3] / self._Fdata[i][2])
-            R = rotation_matrix(xrot, 0.0, 0.0)
-            self._Bdata[i] = self.rotate_body(R, self._Bdata[i])
-            if self._Tdata is None:
-                self._Tdata = np.array([self.get_root_transform(self._Bdata[i])])
-            else:
-                self._Tdata = np.append(self._Tdata, [self.get_root_transform(self._Bdata[i])], axis=0)
-
-        Tdata_t = np.transpose(self._Tdata)
-        for i in range(2, 5):
-            Tdata_t[i] = smooth(Tdata_t[i], 13, 'hanning')
-        self._Tdata = np.transpose(Tdata_t)
-
-        for i in range(len(self._Bdata)):
-            self._Bdata[i] = self.translate_body(self._Tdata[i][0], self._Tdata[i][1], self._Bdata[i])
-            R = rotation_matrix(self._Tdata[i][3], self._Tdata[i][4], self._Tdata[i][5])
-            self._Bdata[i] = self.rotate_body(R, self._Bdata[i])
-
-        #TODO: pass over all joints again and interpolate any missing points
-        #TODO: Calculate derivatives
-        #TODO: read paper for more variables that need to be extracted
-        #TODO: write to disc
-
-
-
-    def rotate_body(self, R, joints):
-        res = [PyKinectV2._Joint() for i in range(PyKinectV2.JointType_Count)]
-        for i in range(PyKinectV2.JointType_Count):
-            t = np.dot(R, np.array([joints[i].Position.x, joints[i].Position.y, joints[i].Position.z]))
-            res[i].Position.x = t[0]
-            res[i].Position.y = t[1]
-            res[i].Position.z = t[2]
-            res[i].TrackingState = joints[i].TrackingState
-            res[i].JointType = joints[i].JointType
-        return res
-
-    def translate_body(self, x, y, z, joints):
-        res = [PyKinectV2._Joint() for i in range(PyKinectV2.JointType_Count)]
-        for i in range(PyKinectV2.JointType_Count):
-            res[i].Position.x = joints[i].Position.x + x
-            res[i].Position.y = joints[i].Position.y + y
-            res[i].Position.z = joints[i].Position.z + z
-            res[i].TrackingState = joints[i].TrackingState
-            res[i].JointType = joints[i].JointType
-        return res
-
     def rotate_camera(self, axis, angle):
         self._rotation[axis] += angle
 
     def translate_camera(self, axis, step):
         self._origin[axis] += step
-
 
     #takes two cameraspace points and draws a line on the screen
     def draw_3d_line(self, v0, v1, color, thickness):
@@ -411,7 +270,6 @@ class Record_Studio(object):
         for i in range(len(floor_edges)):
             self.draw_3d_line(floor_edges[i][0], floor_edges[i][1], (255, 255, 255), 2)
 
-
     def draw_facing_direction(self, vdir):
         theta = atan2(vdir[2], vdir[0])
         x = 1 * cos(theta)
@@ -439,11 +297,11 @@ class Record_Studio(object):
 
     def draw_body(self, joints, color):
         # we make a copy to transform and draw
-        t = self.get_root_transform(joints)
-        cjoints = self.translate_body(-t[0], -t[1], -t[2], joints)
+        t = get_root_transform(joints)
+        cjoints = translate_body(-t[0], -t[1], -t[2], joints)
         #theta = atan2(t[5], t[3])
         #R = rotation_matrix(0.0, theta + 0.5 * pi, 0.0)
-        #cjoints = self.rotate_body(R, cjoints)
+        #cjoints = rotate_body(R, cjoints)
         self.draw_facing_direction(t[3:6])
 
         # Torso
@@ -480,46 +338,6 @@ class Record_Studio(object):
         self.draw_body_bone(cjoints, color, PyKinectV2.JointType_KneeLeft, PyKinectV2.JointType_AnkleLeft)
         self.draw_body_bone(cjoints, color, PyKinectV2.JointType_AnkleLeft, PyKinectV2.JointType_FootLeft)
 
-    def save_body(self, joints, floor):
-        if self._Bdata is None:
-            self._Bdata = np.array([joints])
-            self._Fdata = np.array([[floor.w, floor.x, floor.y, floor.z]])
-        else:
-            self._Bdata = np.append(self._Bdata, [joints], axis=0)
-            self._Fdata = np.append(self._Fdata, [[floor.w, floor.x, floor.y, floor.z]], axis=0)
-
-    # gets transform in format xyz translation, xyz rotation
-    def get_root_transform(self, joints):
-        hip_avg = np.array([(joints[PyKinectV2.JointType_HipLeft].Position.x + joints[PyKinectV2.JointType_HipRight].Position.x) / 2,
-                            (joints[PyKinectV2.JointType_HipLeft].Position.y + joints[PyKinectV2.JointType_HipRight].Position.y) / 2,
-                            (joints[PyKinectV2.JointType_HipLeft].Position.z + joints[PyKinectV2.JointType_HipRight].Position.z) / 2])
-
-        left_shoulder = np.array([joints[PyKinectV2.JointType_ShoulderLeft].Position.x,
-                                  joints[PyKinectV2.JointType_ShoulderLeft].Position.y,
-                                  joints[PyKinectV2.JointType_ShoulderLeft].Position.z])
-
-        right_shoulder = np.array([joints[PyKinectV2.JointType_ShoulderRight].Position.x,
-                                  joints[PyKinectV2.JointType_ShoulderRight].Position.y,
-                                  joints[PyKinectV2.JointType_ShoulderRight].Position.z])
-
-        left_hip = np.array([joints[PyKinectV2.JointType_HipLeft].Position.x,
-                            joints[PyKinectV2.JointType_HipLeft].Position.y,
-                            joints[PyKinectV2.JointType_HipLeft].Position.z])
-
-        right_hip = np.array([joints[PyKinectV2.JointType_HipRight].Position.x,
-                             joints[PyKinectV2.JointType_HipRight].Position.y,
-                             joints[PyKinectV2.JointType_HipRight].Position.z])
-
-        v_shoulder = np.subtract(left_shoulder, right_shoulder)
-        v_hip = np.subtract(left_hip, right_hip)
-        v_avg = (v_shoulder + v_hip) / 2
-
-        #calculate facing direction using cross product
-        x_prod = np.cross(v_avg, np.array([0, 1, 0]))
-
-        return np.concatenate([hip_avg, x_prod])
-
-
     def run(self):
         # -------- Main Program Loop -----------
         floor = None
@@ -552,7 +370,7 @@ class Record_Studio(object):
 
                     #record data
                     if self._record:
-                        self.save_body(joints, floor)
+                        self._data_writer.save_body(joints, floor)
 
             self.draw()
 
@@ -562,7 +380,7 @@ class Record_Studio(object):
 
 
 def main():
-    rs = Record_Studio(True)
+    rs = RecordStudio(True)
     rs.run()
 
 if __name__ == '__main__':

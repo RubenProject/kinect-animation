@@ -1,0 +1,16 @@
+Phase Labelling. 
+Next the phase must be labeled in the data, as this
+will be an input parameter for the PFNN. This can be performed by
+a semi-automatic procedure. Firstly, foot contact times are automatically labeled by computing the magnitude of the velocity of the heel
+and toe joints and observing when these velocities go below some
+threshold [Lee et al. 2002]. Since this heuristic can occasionally fail,
+the results are manually checked and corrected by hand. Once these
+contact times are acquired the phase can be automatically computed
+by observing the frames at which the right foot comes in contact
+with the ground and assigning a phase of 0, observing the frames
+when the left foot comes in contact with the ground and assigning a phase of p, and observing when the next right foot contact
+happens and assigning a phase of 2p. These are then interpolated
+for the inbetween frames. For standing motions some minimum
+cycle duration (~0.25s) is used and the phase is allowed to cycle
+continuously
+
